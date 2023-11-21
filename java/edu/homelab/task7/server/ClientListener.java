@@ -4,67 +4,94 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 
-public class ClientListener {
+public class ClientListener extends Thread {
 
-  private final UUID id = UUID.randomUUID();
-  private final Socket client;
+  private final UUID clientId;
+  private final Socket clientSocket;
   private final List<ClientListener> clients;
 
-  private BufferedReader in;
-  private PrintWriter out;
+  private BufferedReader inputFromClient;
+  private PrintWriter outputToClient;
   private String username;
 
-  public ClientListener(Socket client, List<ClientListener> clients) {
-    this.client = client;
+  public ClientListener(Socket clientSocket, List<ClientListener> clients) {
+    this.clientId = UUID.randomUUID();
+    this.clientSocket = clientSocket;
     this.clients = clients;
   }
 
-  public UUID getId() {
-    return id;
-  }
-
-  public void connect() {
+  @Override
+  public void run() {
     try {
-      in = new BufferedReader(new InputStreamReader(client.getInputStream()));
-      out = new PrintWriter(client.getOutputStream(), true);
+      inputFromClient = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+      outputToClient = new PrintWriter(clientSocket.getOutputStream(), true);
 
-      while (!client.isClosed()) {
-        var message = in.readLine();
-
-        // Stop connection if client sends "quit" message
-        if (message.equals("quit")) {
-          disconnect();
-          continue;
-        }
-
-        // Set username if client sends "@username: " message
-        if (username == null && message.startsWith("@username: ")) {
-          username = message.substring(11);
-          out.println("Client " + id + " set username: " + username);
-          sendMessage(username, "joined the chat");
-          continue;
-        }
-
-        clients.stream()
-          .filter(client -> !client.getId().equals(id))
-          .forEach(client -> client.sendMessage(username, message));
+      String message;
+      while ((message = inputFromClient.readLine()) != null) {
+        handleClientMessage(message);
       }
     } catch (IOException e) {
-      out.println("Error during startConnection(): " + e.getMessage());
+      System.out.println("Error handling client " + clientId + ": " + e.getMessage());
+    } finally {
+      disconnect();
     }
   }
 
-  public void sendMessage(String username, String message) {
-    out.println("@" + username + ": " + message);
+  private void handleClientMessage(String message) {
+    if (username == null && message.startsWith("@username: ")) {
+      setUsername(message);
+      return;
+    }
+
+    if (username != null && message.startsWith("@")) {
+      sendPrivateMessage(message);
+      return;
+    }
+
+    broadcastMessage(message);
+  }
+
+  private void setUsername(String message) {
+    username = message.substring(11);
+    System.out.printf("Client %s connected! Username: %s%n", clientId, username);
+    for (ClientListener clientListener : clients) {
+      if (clientListener.username.equals(username)) {
+        clientListener.sendMessage(username, "welcome back!");
+      } else {
+        clientListener.sendMessage(username, "joined the chat!");
+      }
+    }
+  }
+
+  private void sendPrivateMessage(String message) {
+    String targetUsername = message.substring(1, message.indexOf(" "));
+    String personalMessage = message.substring(message.indexOf(" ") + 1);
+
+    for (ClientListener clientListener : clients) {
+      if (clientListener.username.equals(targetUsername) || clientListener.username.equals(username)) {
+        clientListener.sendMessage(this.username + " [" + targetUsername + "]", personalMessage);
+      }
+    }
+  }
+
+  private void broadcastMessage(String message) {
+    clients.forEach(client -> client.sendMessage(username, message));
+  }
+
+  public void sendMessage(String senderUsername, String message) {
+    outputToClient.println("@" + senderUsername + ": " + message);
   }
 
   public void disconnect() {
     try {
-      in.close();
-      out.close();
-      client.close();
+      inputFromClient.close();
+      outputToClient.close();
+      clientSocket.close();
+      clients.remove(this);
+      clients.forEach(client -> client.sendMessage(username, "has disconnected!"));
+      System.out.println("Client " + clientId + " disconnected!");
     } catch (IOException e) {
-      // Ignore exception
+      System.out.println("Error disconnecting client " + clientId + ": " + e.getMessage());
     }
   }
 }
